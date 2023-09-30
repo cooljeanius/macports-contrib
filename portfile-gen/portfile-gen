@@ -10,7 +10,8 @@
 
 set MY_VERSION 0.2
 
-set supportedGroups [list perl5 php python ruby github]
+# keep sorted
+set supportedGroups [list github perl5 php python ruby]
 
 proc printUsage {{portgroup ""} {channel stderr}} {
    global supportedGroups
@@ -58,7 +59,7 @@ while {[string index [lindex $::argv 0] 0] eq "-"} {
             exit 1
          }
          set groupCode [lindex $::argv 1]
-         if {[lsearch ${supportedGroups} ${groupCode}] == -1} {
+         if {[lsearch -exact -sorted ${supportedGroups} ${groupCode}] == -1} {
             puts "Sorry, port group ${groupCode} is currently not supported"
             puts "Supported: [join ${supportedGroups}]"
             exit 1
@@ -108,7 +109,7 @@ switch ${groupCode} {
    perl5 {
       puts "PortGroup           perl5 1.0"
       puts ""
-      puts "perl5.branches      5.24 5.26"
+      puts "perl5.branches      5.34 5.36"
       puts "perl5.setup         ${portname} ${portversion}"
       puts "categories-append   replaceme"
    }
@@ -150,12 +151,16 @@ switch ${groupCode} {
       puts "categories          replaceme"
    }
 }
+puts "#uncomment if installed files are identical on all OS versions:"
+puts "#platforms           {darwin any}"
+puts "#uncomment if no CPU-specific files are installed:"
+puts "#supported_archs     noarch"
 puts "maintainers         replaceme"
 puts "license             replaceme"
 switch ${groupCode} {
     php {
         puts ""
-        puts {php.branches        5.3 5.4 5.5 5.6 7.0 7.1}
+        puts {php.branches        7.4 8.0 8.1 8.2}
         puts {php.pecl            yes}
     }
 }
@@ -197,7 +202,7 @@ switch ${groupCode} {
    }
    python {
       puts ""
-      puts "python.versions     39 310"
+      puts "python.versions     310 311"
       puts ""
       puts "python.pep517       yes"
       puts ""

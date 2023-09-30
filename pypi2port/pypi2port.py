@@ -25,11 +25,7 @@ import sys
 import os
 import hashlib
 import zipfile
-import requests
-try:
-	import xmlrpclib
-except ImportError:
-	import xmlrpc.client as xmlrpclib
+import json
 import textwrap
 import string
 import shutil
@@ -38,35 +34,36 @@ import difflib
 import subprocess
 import time
 
+import requests
 
-client = xmlrpclib.ServerProxy('https://pypi.org/pypi')
+simple_baseurl = 'https://pypi.org/simple/'
+json_baseurl = 'https://pypi.org/pypi/'
+package_data = {}
 
+def fetch_as_json(url):
+    headers = {'Accept': 'application/vnd.pypi.simple.v1+json'}
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    return r.json()
+
+def populate_package_data(pkgname, pkgvers=None):
+    if pkgname not in package_data:
+        package_data[pkgname] = {}
+    if pkgvers not in package_data[pkgname]:
+        if pkgvers:
+            package_data[pkgname][pkgvers] = fetch_as_json(json_baseurl+pkgname+'/'+pkgvers+'/json')
+        else:
+            package_data[pkgname][pkgvers] = fetch_as_json(json_baseurl+pkgname+'/json')
+
+def get_release_urls(pkgname, pkgvers):
+    populate_package_data(pkgname, pkgvers)
+    return package_data[pkgname][pkgvers]['urls']
 
 def list_all():
 	""" Lists all packages available in pypi database """
-	list_packages = client.list_packages()
-	for package in list_packages:
-		print(package)
+	for package in fetch_as_json(simple_baseurl)['projects']:
+		print(package['name'])
 
-
-class Package_Search:
-	def __init__(self, name, summary, version):
-		self.name = name
-		self.version = version
-		self.summary = ""
-		for i in range(0, len(summary), 62):
-			self.summary += summary[i:62+i] + '\n\t\t'
-
-	def __str__(self):
-		return "Name\t\t" + self.name + "\nVersion\t\t" + self.version + "\nSummary\t\t" + self.summary + "\n"
-		
-
-def search(pkg_name):
-	""" Searches for a particular package by the name classifier """
-	values = client.search({'name': pkg_name})
-	for value in values:
-		package = Package_Search(value['name'], value['summary'], value['version'])
-		print(package)
 
 class Package_release_data:
 	def __init__(self, attributes):
@@ -91,7 +88,8 @@ class Package_release_data:
 def release_data(pkg_name, pkg_version):
 	""" Fetches the release data for a paticular package based on
 	the package_name and package_version """
-	values = client.release_data(pkg_name, pkg_version)
+	populate_package_data(pkg_name, pkg_version)
+	values = package_data[pkg_name][pkg_version]['info']
 	if values:
 		package = Package_release_data(values)
 		print(package)
@@ -104,7 +102,7 @@ def release_data(pkg_name, pkg_version):
 def fetch(pkg_name, dict):
 	""" Fetches the distfile for a particular package name and release_url """
 	print("Fetching distfiles...")
-	checksum_sha256 = dict['sha256_digest']
+	checksum_sha256 = dict['digests']['sha256']
 	parent_dir = './sources'
 	home_dir = parent_dir + '/' + 'python'
 	src_dir = home_dir + '/py-' + pkg_name
@@ -195,13 +193,13 @@ def fetch(pkg_name, dict):
 def fetch_url(pkg_name, pkg_version, checksum=False, deps=False):
 	""" Checks for the checksums and dependecies for a particular python package
 	on the basis of package_name and package_version """
-	values = client.release_urls(pkg_name, pkg_version)
+	urls = get_release_urls(pkg_name, pkg_version)
 	if checksum:
-		for value in values:
-			if value['filename'].split('.')[-1] in ('gz', 'zip'):
+		for value in urls:
+			if value['packagetype'] == 'sdist':
 				return fetch(pkg_name, value)
 	else:
-		for value in values:
+		for value in urls:
 			return fetch(pkg_name, value)
 
 
@@ -211,9 +209,9 @@ def dependencies(pkg_name, pkg_version, deps=False):
 	flag = False
 	if not deps:
 		return
-	values = client.release_urls(pkg_name, pkg_version)
-	for value in values:
-		if value['filename'].split('.')[-1] in ('gz', 'zip'):
+	urls = get_release_urls(pkg_name, pkg_version)
+	for value in urls:
+		if value['packagetype'] == 'sdist':
 			fetch(pkg_name, value)
 	try:
 		with open('./sources/python/py-'
@@ -314,7 +312,7 @@ def checksums(pkg_name, pkg_version):
 def search_distfile(name, version):
 	""" Searches if the distfile listed is present or not """
 	try:
-		url = client.release_urls(name, version)[0]['url']
+		url = get_release_urls(name, version)[0]['url']
 		r = requests.get(url)
 		if not r.status_code == 200:
 			raise Exception('No distfile')
@@ -344,8 +342,22 @@ def search_license(license):
 		if match:
 			return licenses[i]
 
+def is_purepython(pkg_name, pkg_version):
+    """
+    Return True if the specified package is pure Python, or False if it
+    contains native code.
+    """
+    urls = get_release_urls(pkg_name, pkg_version)
+    for url in urls:
+        if url['packagetype'] == 'bdist_wheel':
+            if url['filename'].endswith('-none-any.whl'):
+                return True
+            else:
+                return False
+    return False
 
-def port_testing(name, portv='38'):
+
+def port_testing(name, portv='311'):
 	""" Port Testing function for various phase implementations """
 	euid = os.geteuid()
 	if euid:
@@ -370,7 +382,7 @@ def port_testing(name, portv='38'):
 			os.execlpe('sudo', *args)
 
 
-def port_fetch(name, portv='38'):
+def port_fetch(name, portv='311'):
 	""" Fetch phase implementation """
 	try:
 		command = "sudo port -t fetch dports/python/py-" + \
@@ -382,7 +394,7 @@ def port_fetch(name, portv='38'):
 		return False
 
 
-def port_checksum(name, portv='38'):
+def port_checksum(name, portv='311'):
 	""" Checksum phase implementation """
 	try:
 		command = "sudo port -t checksum dports/python/py-" + \
@@ -394,7 +406,7 @@ def port_checksum(name, portv='38'):
 		return False
 
 
-def port_extract(name, portv='38'):
+def port_extract(name, portv='311'):
 	""" Checksum phase implementation """
 	try:
 		command = "sudo port -t extract dports/python/py-" + \
@@ -406,7 +418,7 @@ def port_extract(name, portv='38'):
 		return False
 
 
-def port_patch(name, portv='38'):
+def port_patch(name, portv='311'):
 	""" Patch phase implementation """
 	try:
 		command = "sudo port -t patch dports/python/py-" + \
@@ -418,7 +430,7 @@ def port_patch(name, portv='38'):
 		return False
 
 
-def port_configure(name, portv='38'):
+def port_configure(name, portv='311'):
 	""" Configure phase implementation """
 	try:
 		command = "sudo port -t configure dports/python/py-" + \
@@ -430,7 +442,7 @@ def port_configure(name, portv='38'):
 		return False
 
 
-def port_build(name, portv='38'):
+def port_build(name, portv='311'):
 	""" Build phase implementation """
 	try:
 		command = "sudo port -t build dports/python/py-" + \
@@ -442,7 +454,7 @@ def port_build(name, portv='38'):
 		return False
 
 
-def port_destroot(name, portv='38'):
+def port_destroot(name, portv='311'):
 	""" Destroot phase implementation """
 	try:
 		command = "sudo port -t destroot dports/python/py-" + \
@@ -454,7 +466,7 @@ def port_destroot(name, portv='38'):
 		return False
 
 
-def port_clean(name, portv='38'):
+def port_clean(name, portv='311'):
 	""" Clean phase implementation """
 	try:
 		command = "sudo port -t clean dports/python/py-" + \
@@ -481,7 +493,9 @@ def create_portfile(dict, file_name, dict2):
 		file.write('name                py-{0}\n'.format(dict['name']))
 		file.write('version             {0}\n'.format(dict['version']))
 
-		file.write('platforms           darwin\n')
+		if is_purepython(dict['name'], dict['version']):
+			file.write('platforms           {darwin any}\n')
+			file.write('supported_archs     noarch\n')
 		license = dict['license']
 		license = search_license(license)
 		file.write('license             {0}\n'.format(license))
@@ -504,7 +518,6 @@ def create_portfile(dict, file_name, dict2):
 			summary = re.sub(r'[\[\]\{\}\;\:\$\t\"\'\`\=(--)]+',
 							 ' ', summary)
 			summary = re.sub(r'\s(\s)+', ' ', summary)
-			summary = str(summary.encode('utf-8'))
 			# print(summary)
 			# print(type(summary))
 			summary = ''.join([x for x in summary if x in string.printable])
@@ -557,9 +570,7 @@ def create_portfile(dict, file_name, dict2):
 				zip_set = False
 
 		if master_site:
-                        if re.match('^https?://files\.pythonhosted\.org/packages/', master_site):
-                            file.write('master_sites        pypi:{0}/{1}\n'.format(dict['name'][0], dict['name']))
-                        else:
+                        if not re.match(r'^https?://files\.pythonhosted\.org/packages/', master_site):
                             file.write('master_sites        {0}\n'.format(master_site))
                         master_site_exists = True
 		else:
@@ -568,8 +579,6 @@ def create_portfile(dict, file_name, dict2):
 		if zip_set:
 			file.write('use_zip             yes\n')
 			file.write('extract.mkdir       yes\n')
-
-		file.write('distname            {0}-${{version}}\n\n'.format(dict['name']))
 
 		print(("Attempting to generate checksums for " + dict['name'] + "..."))
 		checksums_values = checksums(dict['name'], dict['version'])
@@ -592,16 +601,14 @@ def create_portfile(dict, file_name, dict2):
 
 		python_vers = dict['requires_python']
 		if python_vers:
-			file.write('python.versions     38 {0}\n\n'.format(
+			file.write('python.versions     311 {0}\n'.format(
 					   dict['requires_python']))
 		else:
-			file.write('python.versions     38\n\n')
+			file.write('python.versions     311\n')
+		file.write('python.pep517       yes\n\n')
 
 		print("Finding dependencies...")
-		file.write('if {${name} ne ${subport}} {\n')
-		file.write('    depends_build-append \\\n')
-		file.write('                    ' +
-				   'port:py${python.version}-setuptools\n')
+		file.write('if {${name} ne ${subport}} {')
 		deps = dependencies(dict['name'], dict['version'], True)
 		if deps:
 			for i, dep in enumerate(deps):
@@ -628,12 +635,7 @@ def create_portfile(dict, file_name, dict2):
 				file.write("\n")
 		file.write('\n')
 		file.write('    livecheck.type      none\n')
-		if master_site_exists:
-			file.write('} else {\n')
-			file.write('    livecheck.type      pypi\n')
-			file.write('}\n')
-		else:
-			file.write('}\n')
+		file.write('}\n')
 	print("Searching for existent port...")
 	port_exists = search_port(dict['name'])
 	if port_exists:
@@ -671,8 +673,9 @@ def print_portfile(pkg_name, pkg_version=None):
 
 	print("Attempting to fetch data from pypi...")
 
-	dict = client.release_data(pkg_name, pkg_version)
-	dict2 = client.release_urls(pkg_name, pkg_version)
+	populate_package_data(pkg_name, pkg_version)
+	dict = package_data[pkg_name][pkg_version]['info']
+	dict2 = get_release_urls(pkg_name, pkg_version)
 	if dict and dict2:
 		print("Data fetched successfully.")
 	elif dict:
@@ -694,10 +697,6 @@ def main(argv):
 	parser.add_argument('-l', '--list', action='store_true', dest='list',
 						default=False, required=False,
 						help='List all packages')
-# Calls search with the package_name
-	parser.add_argument('-s', '--search', action='store', type=str,
-						dest='packages_search', nargs='*', required=False,
-						help='Search for a package')
 # Calls release_data with package_name and package_version
 	parser.add_argument('-d', '--data', action='store',
 						dest='packages_data', nargs='*', type=str,
@@ -720,19 +719,15 @@ def main(argv):
 		list_all()
 		return
 
-	if options.packages_search:
-		for pkg_name in options.packages_search:
-			search(pkg_name)
-		return
-
 	if options.packages_data:
 		pkg_name = options.packages_data[0]
 		if len(options.packages_data) > 1:
 			pkg_version = options.packages_data[1]
 			release_data(pkg_name, pkg_version)
 		else:
-			if client.package_releases(pkg_name):
-				pkg_version = client.package_releases(pkg_name)[0]
+			populate_package_data(pkg_name)
+			if package_data[pkg_name][None]['releases']:
+				pkg_version = package_data[pkg_name][None]['info']['version']
 				release_data(pkg_name, pkg_version)
 			else:
 				print("No release found\n")
@@ -744,9 +739,10 @@ def main(argv):
 			pkg_version = options.package_fetch[1]
 			fetch_url(pkg_name, pkg_version)
 		else:
-			releases = client.package_releases(pkg_name)
+			populate_package_data(pkg_name)
+			releases = package_data[pkg_name][None]['releases']
 			if releases:
-				pkg_version = releases[0]
+				pkg_version = package_data[pkg_name][None]['info']['version']
 				fetch_url(pkg_name, pkg_version)
 			else:
 				print("No release found\n")
@@ -758,9 +754,10 @@ def main(argv):
 			pkg_version = options.package_portfile[1]
 			print_portfile(pkg_name, pkg_version)
 		else:
-			vers = client.package_releases(pkg_name)
+			populate_package_data(pkg_name)
+			vers = package_data[pkg_name][None]['releases']
 			if vers:
-				pkg_version = vers[0]
+				pkg_version = package_data[pkg_name][None]['info']['version']
 				print_portfile(pkg_name, pkg_version)
 			else:
 				print("No release found\n")
